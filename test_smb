@@ -1,10 +1,36 @@
-# 대상 목록: 도메인 조인 컴퓨터 FQDN
-$targets = (Get-ADComputer -Filter * -Properties DNSHostName).DNSHostName | ? { $_ }
+# AD 모듈이 있으면 사용, 없으면 LDAP 대체
+if (Get-Module -ListAvailable ActiveDirectory) {
+  Import-Module ActiveDirectory
+  $targets = (Get-ADComputer -Filter * -Properties DNSHostName).DNSHostName | ? { $_ }
+} else {
+  # LDAP로 도메인 조인 컴퓨터 FQDN 수집
+  $rootDN = ([ADSI]"LDAP://RootDSE").defaultNamingContext
+  $searcher = New-Object System.DirectoryServices.DirectorySearcher([ADSI]"LDAP://$rootDN")
+  $searcher.PageSize = 1000
+  $searcher.Filter = "(objectCategory=computer)"
+  $null = $searcher.PropertiesToLoad.Add("dNSHostName")
+  $null = $searcher.PropertiesToLoad.Add("name")
+  $res = $searcher.FindAll()
+
+  # dNSHostName 없으면 name+도메인으로 보정
+  $domainDns = ($rootDN -replace 'DC=','' -replace ',','.')
+  $targets = @()
+  foreach ($r in $res) {
+    $dns = $r.Properties["dnshostname"]
+    if ($dns -and $dns[0]) {
+      $targets += $dns[0]
+    } else {
+      $name = $r.Properties["name"]
+      if ($name -and $name[0]) { $targets += "$($name[0]).$domainDns" }
+    }
+  }
+  $targets = $targets | ? { $_ } | Sort-Object -Unique
+}
 
 $results = foreach ($h in $targets) {
   if (-not (Test-NetConnection $h -Port 445 -InformationLevel Quiet)) { continue }
 
-  # 현재 계정으로 공유 열람
+  # 현재 계정으로 공유 나열
   $shareLines = (& cmd /c "net view \\$h" 2>$null)
   $shares = $shareLines | ? { $_ -match '^\s+\S+' } | % { ($_ -split '\s+')[0] } | ? { $_ -and $_ -ne 'IPC$' }
 
@@ -14,19 +40,15 @@ $results = foreach ($h in $targets) {
 
   foreach ($s in $shares) {
     $path = "\\$h\$s"
-
-    # 현재 계정으로 목록 접근 가능?
     $curList = Test-Path $path
-
-    # Null 세션 상태에서 목록 접근 가능? (성공 시 동일 세션으로 접근됨)
     $anonList = $null
     if ($anonOK) { $anonList = Test-Path $path }
 
     [pscustomobject]@{
-      Host       = $h
-      Share      = $s
-      List_CurrentUser = $curList
-      List_Anonymous   = $anonList
+      Host            = $h
+      Share           = $s
+      List_CurrentUser= $curList
+      List_Anonymous  = $anonList
     }
   }
 
@@ -34,3 +56,5 @@ $results = foreach ($h in $targets) {
 }
 
 $results | Sort-Object Host, Share | Format-Table -AutoSize
+# CSV로 저장하려면:
+# $results | Export-Csv smb_results.csv -NoTypeInformation -Encoding UTF8
