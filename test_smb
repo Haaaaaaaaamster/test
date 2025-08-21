@@ -1,0 +1,36 @@
+# 대상 목록: 도메인 조인 컴퓨터 FQDN
+$targets = (Get-ADComputer -Filter * -Properties DNSHostName).DNSHostName | ? { $_ }
+
+$results = foreach ($h in $targets) {
+  if (-not (Test-NetConnection $h -Port 445 -InformationLevel Quiet)) { continue }
+
+  # 현재 계정으로 공유 열람
+  $shareLines = (& cmd /c "net view \\$h" 2>$null)
+  $shares = $shareLines | ? { $_ -match '^\s+\S+' } | % { ($_ -split '\s+')[0] } | ? { $_ -and $_ -ne 'IPC$' }
+
+  # Null Session 연결 시도
+  & cmd /c "net use \\$h\IPC$ "" /user:"""" /persistent:no" 2>$null | Out-Null
+  $anonOK = ($LASTEXITCODE -eq 0)
+
+  foreach ($s in $shares) {
+    $path = "\\$h\$s"
+
+    # 현재 계정으로 목록 접근 가능?
+    $curList = Test-Path $path
+
+    # Null 세션 상태에서 목록 접근 가능? (성공 시 동일 세션으로 접근됨)
+    $anonList = $null
+    if ($anonOK) { $anonList = Test-Path $path }
+
+    [pscustomobject]@{
+      Host       = $h
+      Share      = $s
+      List_CurrentUser = $curList
+      List_Anonymous   = $anonList
+    }
+  }
+
+  if ($anonOK) { & cmd /c "net use \\$h\IPC$ /delete /y" | Out-Null }
+}
+
+$results | Sort-Object Host, Share | Format-Table -AutoSize
