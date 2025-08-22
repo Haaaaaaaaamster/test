@@ -1,0 +1,19 @@
+# 1) 공유 폴더 생성
+$share = 'Public'; $path = 'D:\Shares\Public'
+New-Item -ItemType Directory -Path $path -Force | Out-Null
+
+# 2) NTFS 권한: Everyone에 수정 권한 부여 (하위에 상속)
+icacls $path /grant *S-1-1-0:(OI)(CI)M /T
+
+# 3) 공유 생성 + 공유권한: Everyone에 변경(편집) 권한
+New-SmbShare -Name $share -Path $path -ChangeAccess 'Everyone' -CachingMode None -FolderEnumerationMode AccessBased
+
+# (선택) 방화벽 열기
+Set-NetFirewallRule -DisplayGroup "File and Printer Sharing" -Enabled True
+
+
+# 공유만 삭제 (폴더는 남김)
+Remove-SmbShare -Name 'Public' -Force
+
+# 폴더까지 같이 삭제하려면
+Remove-Item -Path 'D:\Shares\Public' -Recurse -Force
